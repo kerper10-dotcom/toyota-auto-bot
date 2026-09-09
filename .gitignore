@@ -1,5 +1,6 @@
 .env
 .venv/
+seen-avto.json
 venv/
 __pycache__/
 *.pyc

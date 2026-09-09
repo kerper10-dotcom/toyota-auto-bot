@@ -23,7 +23,41 @@ from bs4 import BeautifulSoup
 
 ROOT = Path(__file__).resolve().parent
 SEARCHES_PATH = ROOT / "searches.json"
-SEEN_PATH = ROOT / "seen.json"
+
+
+def load_dotenv() -> None:
+    path = ROOT / ".env"
+    if not path.exists():
+        return
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+
+
+def seen_path() -> Path:
+    raw = os.environ.get("SEEN_FILE", "").strip()
+    return Path(raw) if raw else ROOT / "seen.json"
+
+
+def selected_sites() -> set[str] | None:
+    raw = ""
+    args = sys.argv[1:]
+    for i, arg in enumerate(args):
+        if arg == "--sites" and i + 1 < len(args):
+            raw = args[i + 1]
+            break
+        if arg.startswith("--sites="):
+            raw = arg.split("=", 1)[1]
+            break
+    if not raw:
+        raw = os.environ.get("SITES", "")
+    raw = raw.strip()
+    if not raw or raw in {"*", "all"}:
+        return None
+    return {part.strip() for part in raw.split(",") if part.strip()}
 
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -577,16 +611,22 @@ def send_telegram(text: str) -> None:
 # ---------------------------------------------------------------------------
 
 def main() -> int:
+    load_dotenv()
     dry_run = "--dry-run" in sys.argv
     send_existing = "--send-existing" in sys.argv
+    sites = selected_sites()
     searches = load_json(SEARCHES_PATH, [])
-    seen: dict[str, list[str]] = load_json(SEEN_PATH, {})
+    if sites:
+        searches = [s for s in searches if s.get("site") in sites]
+        print(f"[i] sites filter: {', '.join(sorted(sites))}")
+    seen_file = seen_path()
+    seen: dict[str, list[str]] = load_json(seen_file, {})
     found_new = 0
     sent = 0
     failures: list[str] = []
 
     if not searches:
-        print("searches.json is empty")
+        print("searches.json is empty (or SITES filter matched nothing)")
         return 1
 
     from playwright.sync_api import sync_playwright
@@ -668,11 +708,11 @@ def main() -> int:
             if firefox_browser is not None:
                 firefox_browser.close()
 
-    save_json(SEEN_PATH, seen)
+    save_json(seen_file, seen)
     print(f"\nDone. New: {found_new}, sent: {sent}, failures: {len(failures)}")
     if failures:
         print("Failed searches:", ", ".join(failures))
-        # Partial failure is OK — seen.json for successful searches is saved.
+        # Partial failure is OK — seen file for successful searches is saved.
         # Exit 0 so GitHub still commits seen.json. Full-fail only if everything died.
         if len(failures) == len(searches):
             return 2

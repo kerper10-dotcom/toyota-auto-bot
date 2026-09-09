@@ -32,6 +32,14 @@ Secrets u GitHubu (Settings → Secrets and variables → Actions):
 
 Schedule: `17 */2 * * *` (svaka 2 sata). Ručno: Actions → **Auto oglasi monitor** → Run workflow.
 
+GitHub **ne može** čitati Avto.net (Cloudflare na datacenter IP). Te 4 pretrage idu s ovog Maca preko `launchd` svaka 2 sata, isti Telegram bot.
+
+```bash
+./scripts/install_avto_mac.sh
+```
+
+Mac mora biti upaljen (sleep = preskočena Avto.net provjera). Index / willhaben / Njuškalo i dalje idu preko GitHuba.
+
 ## Lokalni test
 
 ```bash
