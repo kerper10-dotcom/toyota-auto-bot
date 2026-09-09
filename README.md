@@ -40,31 +40,11 @@ Avto.net i Njuškalo imaju Cloudflare / bot zaštitu. 2 sata je dovoljno često 
 
 Dok secreti nisu postavljeni, bot i dalje radi i puni `seen.json`, samo ne šalje poruke.
 
-## GitHub (public repo na `kerper10`)
+## GitHub (public repo)
 
-Na svom računalu, iz ovog foldera:
+Repo: [kerper10-dotcom/toyota-auto-bot](https://github.com/kerper10-dotcom/toyota-auto-bot)
 
-```bash
-cd /Users/lk/bots/auto-oglasi-bot
-git init
-git add .
-git commit -m "Initial auto-oglasi Telegram bot"
-gh repo create kerper10/auto-oglasi-bot --public --source=. --remote=origin --push
-```
-
-Ako `gh` nije ulogiran:
-
-```bash
-gh auth login
-```
-
-ili ručno napravi prazan public repo `auto-oglasi-bot` na GitHubu pa:
-
-```bash
-git remote add origin https://github.com/kerper10/auto-oglasi-bot.git
-git branch -M main
-git push -u origin main
-```
+Telegram bot: [@toyota_auto_bot](https://t.me/toyota_auto_bot)
 
 Zatim:
 
