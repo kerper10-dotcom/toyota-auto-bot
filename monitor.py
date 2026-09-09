@@ -94,14 +94,55 @@ def looks_blocked(html: str, title: str = "") -> bool:
     blob = f"{title}\n{html[:8000]}".lower()
     needles = [
         "just a moment",
+        "pričekajte trenutak",
+        "pricekajte trenutak",
+        "pričekajte",
+        "please wait",
         "access to this page has been denied",
         "pardon our interruption",
         "g-recaptcha",
         "hcaptcha",
         "cf-chl-bypass",
         "checking your browser",
+        "um trenutek",
     ]
     return any(n in blob for n in needles)
+
+
+LISTING_SELECTORS = {
+    "avto": ".GO-Results-Row",
+    "willhaben": "script#__NEXT_DATA__",
+    "njuskalo": "article",
+    "index": None,
+}
+
+
+def wait_out_challenge(page, site: str) -> None:
+    """Give Cloudflare / Avto.net IUAM time to resolve, then wait for listings."""
+    selector = LISTING_SELECTORS.get(site)
+    deadline = time.time() + 22
+    while time.time() < deadline:
+        title = ""
+        try:
+            title = page.title()
+        except Exception:
+            pass
+        count = 0
+        if selector:
+            try:
+                count = page.locator(selector).count()
+            except Exception:
+                count = 0
+        if count > 0:
+            return
+        if not looks_blocked("", title):
+            break
+        page.wait_for_timeout(1000)
+    if selector:
+        try:
+            page.locator(selector).first.wait_for(state="attached", timeout=12_000)
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -396,6 +437,22 @@ def launch_browser(playwright):
         return playwright.chromium.launch(channel="chrome", headless=True, args=args)
 
 
+def new_page(browser, locale: str = "hr-HR"):
+    context = browser.new_context(
+        user_agent=USER_AGENT,
+        locale=locale,
+        viewport={"width": 1366, "height": 900},
+    )
+    page = context.new_page()
+    try:
+        page.add_init_script(
+            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+        )
+    except Exception:
+        pass
+    return context, page
+
+
 def scrape_search(page, search: dict) -> list[dict[str, str]]:
     site = search["site"]
     url = search["url"]
@@ -417,7 +474,7 @@ def scrape_search(page, search: dict) -> list[dict[str, str]]:
     page.on("response", on_response)
     try:
         page.goto(url, wait_until="domcontentloaded", timeout=BROWSER_TIMEOUT_MS)
-        page.wait_for_timeout(1800)
+        page.wait_for_timeout(1200)
         accept_cookies(page)
 
         title = ""
@@ -425,9 +482,9 @@ def scrape_search(page, search: dict) -> list[dict[str, str]]:
             title = page.title()
         except Exception:
             pass
-        if looks_blocked("", title) or "just a moment" in title.lower():
-            print("    [i] challenge page, waiting")
-            page.wait_for_timeout(8000)
+        if looks_blocked("", title):
+            print(f"    [i] challenge page ({title!r}), waiting")
+            wait_out_challenge(page, site)
 
         try:
             page.evaluate("window.scrollTo(0, 700)")
@@ -536,18 +593,8 @@ def main() -> int:
 
     with sync_playwright() as p:
         browser = launch_browser(p)
-        context = browser.new_context(
-            user_agent=USER_AGENT,
-            locale="hr-HR",
-            viewport={"width": 1366, "height": 900},
-        )
-        page = context.new_page()
-        try:
-            page.add_init_script(
-                "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
-            )
-        except Exception:
-            pass
+        context, page = new_page(browser)
+        firefox_browser = None
 
         try:
             for idx, search in enumerate(searches):
@@ -559,9 +606,26 @@ def main() -> int:
                 try:
                     ads = scrape_search(page, search)
                 except Exception as exc:
-                    print(f"  [!] scrape failed: {exc}")
-                    failures.append(name)
-                    continue
+                    ads = []
+                    if search["site"] == "avto":
+                        print(f"  [!] chromium failed: {exc}")
+                        print("  [i] retrying Avto.net with Firefox")
+                        try:
+                            if firefox_browser is None:
+                                firefox_browser = p.firefox.launch(
+                                    headless=True, args=["--no-sandbox"]
+                                )
+                            fx_ctx, fx_page = new_page(firefox_browser, locale="sl-SI")
+                            try:
+                                ads = scrape_search(fx_page, search)
+                            finally:
+                                fx_ctx.close()
+                        except Exception as fx_exc:
+                            print(f"  [!] firefox also failed: {fx_exc}")
+                    if not ads:
+                        print(f"  [!] scrape failed: {exc}")
+                        failures.append(name)
+                        continue
 
                 ids = [ad["id"] for ad in ads]
                 print(f"  [i] {len(ads)} listings")
@@ -601,6 +665,8 @@ def main() -> int:
                     time.sleep(DELAY_BETWEEN_SEARCHES)
         finally:
             browser.close()
+            if firefox_browser is not None:
+                firefox_browser.close()
 
     save_json(SEEN_PATH, seen)
     print(f"\nDone. New: {found_new}, sent: {sent}, failures: {len(failures)}")

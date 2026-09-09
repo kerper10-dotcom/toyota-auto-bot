@@ -29,6 +29,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Python 3.12
         uses: actions/setup-python@v5
@@ -39,9 +41,10 @@ jobs:
       - name: Dependencies
         run: |
           pip install -r requirements.txt
-          python -m playwright install chromium --with-deps
+          python -m playwright install chromium firefox --with-deps
 
       - name: Check listings
+        id: scrape
         run: |
           extra=""
           if [ "${{ github.event.inputs.send_existing }}" = "true" ]; then
@@ -57,13 +60,14 @@ jobs:
           git add seen.json
           if git diff --cached --quiet; then
             echo "seen.json unchanged"
-          else
-            git commit -m "Update seen listings"
-            git push
+            exit 0
           fi
+          git commit -m "Update seen listings"
+          git pull --rebase origin main
+          git push
 
-      - name: Telegram if the job failed
-        if: failure()
+      - name: Telegram if scrape failed
+        if: failure() && steps.scrape.outcome == 'failure'
         run: |
           if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ]; then
             echo "Secrets nisu postavljeni, nema Telegram alarma."
