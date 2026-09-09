@@ -442,6 +442,73 @@ def parse_index_api(payload: dict[str, Any]) -> list[dict[str, str]]:
 
 
 # ---------------------------------------------------------------------------
+# FlareSolverr (GitHub Actions Cloudflare bypass for Avto.net)
+# ---------------------------------------------------------------------------
+
+def flaresolverr_base() -> str:
+    return os.environ.get("FLARESOLVERR_URL", "").strip().rstrip("/")
+
+
+def flaresolverr_post(payload: dict[str, Any], timeout: int = 120) -> dict[str, Any]:
+    base = flaresolverr_base()
+    if not base:
+        raise RuntimeError("FLARESOLVERR_URL is not set")
+    resp = requests.post(f"{base}/v1", json=payload, timeout=timeout)
+    resp.raise_for_status()
+    data = resp.json()
+    if data.get("status") != "ok":
+        raise RuntimeError(data.get("message") or str(data)[:300])
+    return data
+
+
+def flaresolverr_create_session() -> str | None:
+    try:
+        data = flaresolverr_post({"cmd": "sessions.create"}, timeout=60)
+        session = data.get("session")
+        print(f"  [i] FlareSolverr session {session}")
+        return session
+    except Exception as exc:
+        print(f"  [!] FlareSolverr session.create failed: {exc}")
+        return None
+
+
+def flaresolverr_destroy_session(session: str | None) -> None:
+    if not session:
+        return
+    try:
+        flaresolverr_post({"cmd": "sessions.destroy", "session": session}, timeout=30)
+    except Exception:
+        pass
+
+
+def flaresolverr_get_html(url: str, session: str | None = None) -> str:
+    payload: dict[str, Any] = {
+        "cmd": "request.get",
+        "url": url,
+        "maxTimeout": 90_000,
+    }
+    if session:
+        payload["session"] = session
+    data = flaresolverr_post(payload, timeout=120)
+    html = (data.get("solution") or {}).get("response") or ""
+    title_m = re.search(r"<title[^>]*>(.*?)</title>", html, re.I | re.S)
+    title = clean(title_m.group(1)) if title_m else ""
+    if looks_blocked(html, title):
+        raise RuntimeError(f"FlareSolverr still blocked ({title!r}, {len(html)} bytes)")
+    if len(html) < 2000:
+        raise RuntimeError(f"FlareSolverr short response ({title!r}, {len(html)} bytes)")
+    return html
+
+
+def scrape_avto_via_flaresolverr(search: dict, session: str | None) -> list[dict[str, str]]:
+    html = flaresolverr_get_html(search["url"], session)
+    ads = parse_avto(html)
+    if not ads:
+        raise RuntimeError(f"0 listings parsed from FlareSolverr HTML ({len(html)} bytes)")
+    return ads
+
+
+# ---------------------------------------------------------------------------
 # Browser
 # ---------------------------------------------------------------------------
 
@@ -631,10 +698,11 @@ def main() -> int:
 
     from playwright.sync_api import sync_playwright
 
+    fs_session = flaresolverr_create_session() if flaresolverr_base() else None
+
     with sync_playwright() as p:
         browser = launch_browser(p)
         context, page = new_page(browser)
-        firefox_browser = None
 
         try:
             for idx, search in enumerate(searches):
@@ -643,29 +711,17 @@ def main() -> int:
                 print(f"\n[{name}]")
                 print(f"  URL: {search['url'][:110]}...")
 
+                ads: list[dict[str, str]] = []
                 try:
-                    ads = scrape_search(page, search)
+                    if search["site"] == "avto" and flaresolverr_base():
+                        print("  [i] fetching Avto.net via FlareSolverr")
+                        ads = scrape_avto_via_flaresolverr(search, fs_session)
+                    else:
+                        ads = scrape_search(page, search)
                 except Exception as exc:
-                    ads = []
-                    if search["site"] == "avto":
-                        print(f"  [!] chromium failed: {exc}")
-                        print("  [i] retrying Avto.net with Firefox")
-                        try:
-                            if firefox_browser is None:
-                                firefox_browser = p.firefox.launch(
-                                    headless=True, args=["--no-sandbox"]
-                                )
-                            fx_ctx, fx_page = new_page(firefox_browser, locale="sl-SI")
-                            try:
-                                ads = scrape_search(fx_page, search)
-                            finally:
-                                fx_ctx.close()
-                        except Exception as fx_exc:
-                            print(f"  [!] firefox also failed: {fx_exc}")
-                    if not ads:
-                        print(f"  [!] scrape failed: {exc}")
-                        failures.append(name)
-                        continue
+                    print(f"  [!] scrape failed: {exc}")
+                    failures.append(name)
+                    continue
 
                 ids = [ad["id"] for ad in ads]
                 print(f"  [i] {len(ads)} listings")
@@ -705,8 +761,7 @@ def main() -> int:
                     time.sleep(DELAY_BETWEEN_SEARCHES)
         finally:
             browser.close()
-            if firefox_browser is not None:
-                firefox_browser.close()
+            flaresolverr_destroy_session(fs_session)
 
     save_json(seen_file, seen)
     print(f"\nDone. New: {found_new}, sent: {sent}, failures: {len(failures)}")
