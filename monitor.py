@@ -453,12 +453,27 @@ def flaresolverr_post(payload: dict[str, Any], timeout: int = 120) -> dict[str, 
     base = flaresolverr_base()
     if not base:
         raise RuntimeError("FLARESOLVERR_URL is not set")
-    resp = requests.post(f"{base}/v1", json=payload, timeout=timeout)
-    resp.raise_for_status()
-    data = resp.json()
-    if data.get("status") != "ok":
-        raise RuntimeError(data.get("message") or str(data)[:300])
-    return data
+    last_error: Exception | None = None
+    for attempt in range(1, 4):
+        try:
+            resp = requests.post(f"{base}/v1", json=payload, timeout=timeout)
+            if resp.status_code >= 500:
+                last_error = RuntimeError(
+                    f"{resp.status_code} from FlareSolverr (attempt {attempt}/3)"
+                )
+                time.sleep(4 * attempt)
+                continue
+            resp.raise_for_status()
+            data = resp.json()
+            if data.get("status") != "ok":
+                raise RuntimeError(data.get("message") or str(data)[:300])
+            return data
+        except (requests.RequestException, RuntimeError) as exc:
+            last_error = exc
+            if attempt == 3:
+                break
+            time.sleep(4 * attempt)
+    raise last_error or RuntimeError("FlareSolverr request failed")
 
 
 def flaresolverr_create_session() -> str | None:
