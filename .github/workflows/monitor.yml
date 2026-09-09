@@ -1,0 +1,80 @@
+name: Auto oglasi monitor
+
+on:
+  schedule:
+    # Every 2 hours at minute 17 UTC. Offset avoids round-hour bot traffic.
+    - cron: "17 */2 * * *"
+  workflow_dispatch:
+    inputs:
+      send_existing:
+        description: "Pošalji i trenutno aktivne oglase (samo za test, može ih biti puno)"
+        type: boolean
+        default: false
+
+concurrency:
+  group: auto-oglasi-monitor
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      PYTHONUNBUFFERED: "1"
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Dependencies
+        run: |
+          pip install -r requirements.txt
+          python -m playwright install chromium --with-deps
+
+      - name: Check listings
+        run: |
+          extra=""
+          if [ "${{ github.event.inputs.send_existing }}" = "true" ]; then
+            extra="--send-existing"
+          fi
+          python monitor.py $extra
+
+      - name: Commit seen.json
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add seen.json
+          if git diff --cached --quiet; then
+            echo "seen.json unchanged"
+          else
+            git commit -m "Update seen listings"
+            git push
+          fi
+
+      - name: Telegram if the job failed
+        if: failure()
+        run: |
+          if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ]; then
+            echo "Secrets nisu postavljeni, nema Telegram alarma."
+            exit 0
+          fi
+          IFS=',; ' read -ra CHATS <<< "$TELEGRAM_CHAT_ID"
+          for chat in "${CHATS[@]}"; do
+            [ -z "$chat" ] && continue
+            curl -fsS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+              --data-urlencode "chat_id=${chat}" \
+              --data-urlencode "text=⚠️ Auto-oglasi bot: GitHub Actions run nije uspio. Otvori Actions tab u repou." \
+              --data-urlencode "disable_web_page_preview=true" \
+              || true
+          done
