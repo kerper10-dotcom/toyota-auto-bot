@@ -42,7 +42,10 @@ jobs:
       - name: Dependencies
         run: |
           pip install -r requirements.txt
-          python -m playwright install chromium --with-deps
+          # --with-deps hits Google's Chrome apt repo and occasionally
+          # fails with a hash-sum mismatch, aborting the whole job.
+          python -m playwright install chromium
+          python -m playwright install-deps chromium || echo "install-deps failed, continuing with bundled libs"
 
       - name: Start FlareSolverr
         run: |
@@ -81,8 +84,8 @@ jobs:
           git pull --rebase origin main
           git push
 
-      - name: Telegram if scrape failed
-        if: failure() && steps.scrape.outcome == 'failure'
+      - name: Telegram if the job failed
+        if: failure()
         run: |
           if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ]; then
             echo "Secrets nisu postavljeni, nema Telegram alarma."
