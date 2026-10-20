@@ -335,20 +335,44 @@ def parse_willhaben(html: str) -> list[dict[str, str]]:
     return out
 
 
-def parse_njuskalo(html: str) -> list[dict[str, str]]:
+def njuskalo_ad_matches(search_url: str, ad_url: str, title: str) -> bool:
+    """Salon iznad rezultata miješa druge modele u istu stranicu pretrage."""
+    path = search_url.split("?")[0].rstrip("/").lower()
+    ad_path = ad_url.split("?")[0].lower()
+    title_l = title.lower()
+    if path.endswith("/mazda-2"):
+        if re.search(r"/mazda-2(?:-|$)", ad_path):
+            return True
+        compact = title_l.replace("mazda2", "mazda 2")
+        if re.search(r"\bmazda\s*2\b", compact) and not re.search(
+            r"\bmazda\s*[3-9]\b|\bcx[-\s]?\d", compact
+        ):
+            return True
+        return False
+    if path.endswith("/toyota-yaris"):
+        return "yaris" in ad_path or "yaris" in title_l
+    return True
+
+
+def parse_njuskalo(html: str, search_url: str = "") -> list[dict[str, str]]:
     soup = BeautifulSoup(html, "html.parser")
     out: list[dict[str, str]] = []
     seen: set[str] = set()
 
     for article in soup.find_all("article"):
         parent = article.parent
-        parent_classes = " ".join(parent.get("class", []) if parent else [])
-        if "EntityList-item--FeaturedStore" in parent_classes:
+        parent_classes = parent.get("class", []) if parent else []
+        parent_class_str = " ".join(parent_classes)
+        if "EntityList-item--FeaturedStore" in parent_class_str:
             continue
-        if "EntityList-item--Latest" in parent_classes:
+        if "EntityList-item--Latest" in parent_class_str:
             continue
-        if "EntityList-item--banner" in parent_classes:
+        if "EntityList-item--banner" in parent_class_str:
             continue
+        # Novi UI: izlog salona je li.listing bez datuma objave.
+        if parent and parent.name == "li" and "listing" in parent_classes:
+            if parent.find("time", class_="createdAt") is None:
+                continue
 
         link = article.find("a", href=re.compile(r"oglas-\d+"))
         if not link:
@@ -358,15 +382,19 @@ def parse_njuskalo(html: str) -> list[dict[str, str]]:
         if not m or m.group(1) in seen:
             continue
         ad_id = m.group(1)
-        seen.add(ad_id)
 
         url = href if href.startswith("http") else "https://www.njuskalo.hr" + href
         title = clean(link.get_text(" "))
+        if search_url and not njuskalo_ad_matches(search_url, url, title):
+            continue
+        seen.add(ad_id)
         price_el = article.find(class_="price--hrk") or article.find(class_="price")
         price = clean(price_el.get_text(" ") if price_el else "")
 
         year = ""
         km = ""
+        for published in article.find_all("time", class_="createdAt"):
+            published.decompose()
         desc = article.find(class_="entity-description-main") or article.find(
             class_="entity-description"
         )
@@ -621,7 +649,7 @@ def scrape_search(page, search: dict) -> list[dict[str, str]]:
         elif site == "willhaben":
             ads = parse_willhaben(html)
         elif site == "njuskalo":
-            ads = parse_njuskalo(html)
+            ads = parse_njuskalo(html, url)
         elif site == "index":
             ads = parse_index_api(api_payload) if api_payload else []
             if not ads:
